@@ -1,5 +1,8 @@
+using AutoMapper;
 using DishesAPI.DbContexts;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
+using DishesAPI.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -7,34 +10,65 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<DishesDbContext>(o => o.UseSqlite(
     builder.Configuration["ConnectionStrings:DishesDBConnectionString"]));
 
+builder.Services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 
 var app = builder.Build();
 
 app.UseHttpsRedirection();
 
-var summaries = new[]
+app.MapGet("/dishes", async (DishesDbContext dishesDbContext,
+    ClaimsPrincipal claimsPrincipal,
+    IMapper mapper,
+    string? name) =>
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
- 
+    Console.WriteLine($"User authenticated? {claimsPrincipal.Identity?.IsAuthenticated}");
 
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
+    return TypedResults.Ok(mapper.Map<IEnumerable<DishDto>>(await dishesDbContext.Dishes
+        .Where(d => name == null || d.Name.Contains(name))
+        .ToListAsync()));
 });
 
-app.Run();
-
-internal record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
+app.MapGet("/dishes/{dishId:guid}", async (DishesDbContext dishesDbContext,
+    IMapper mapper,
+    Guid dishId) =>
 {
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
+    var dishEntity = await dishesDbContext.Dishes
+        .FirstOrDefaultAsync(d => d.Id == dishId);
+    if (dishEntity == null)
+    {
+        return Results.NotFound();
+    }
+
+    return TypedResults.Ok(mapper.Map<DishDto>(dishEntity));
+});
+
+app.MapGet("/dishes/{dishName}", async (DishesDbContext dishesDbContext,
+    IMapper mapper,
+    string dishName) =>
+{
+    return mapper.Map<DishDto>(await dishesDbContext.Dishes
+        .FirstOrDefaultAsync(d => d.Name == dishName));
+});
+
+app.MapGet("/dishes/{dishId}/ingredients", async (DishesDbContext dishesDbContext,
+    IMapper mapper,
+    Guid dishId) =>
+{
+    return mapper.Map<IEnumerable<IngredientDto>>((await dishesDbContext.Dishes
+        .Include(d => d.Ingredients)
+        .FirstOrDefaultAsync(d => d.Id == dishId))?.Ingredients);
+});
+
+
+
+// recreate & migrate the database on each run, for demo purposes
+using (var serviceScope = app.Services.GetService<IServiceScopeFactory>().CreateScope())
+{
+    var context = serviceScope.ServiceProvider.GetRequiredService<DishesDbContext>();
+    context.Database.EnsureDeleted();
+    context.Database.Migrate();
 }
+
+
+app.Run();
